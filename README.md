@@ -1,3 +1,6 @@
+# Game-theory-for-energy-communities
+Repository for Game-theory-for-energy-communities
+
 ## Env Setup
 ```shell
 pip install numpy matplotlib gurobipy
