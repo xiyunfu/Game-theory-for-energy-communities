@@ -12,7 +12,7 @@ numpy               1.26.4
 gurobipy            11.0.1
 ```
 ## Run
-At the root of this repository `Game-theory-for-energy-communities`
+At the root of this repository `path/to/Game-theory-for-energy-communities`
 ```shell
  python main.py
 ```
