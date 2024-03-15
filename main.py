@@ -17,6 +17,8 @@ def generate_pv_production(timestep=24):
     hours = np.arange(timestep)
     irradiance = peak_irradiance * np.cos((hours - 12) * np.pi / 12) ** 2
     irradiance[irradiance < 0] = 0  # No negative irradiance
+    irradiance[:6] = 0  # No generation before 6 am
+    irradiance[17:] = 0  # No generation after 8 pm
 
     # Calculate power output
     power_output = irradiance * panel_efficiency * system_size / 1000  # kW
@@ -55,6 +57,21 @@ def generate_electricity_consumption_profile():
     return hourly_consumption
 
 
+def plot_local_price(c_local):
+    hours = np.arange(24)
+    plt.figure(figsize=(12, 6))
+    plt.plot(hours, c_local, marker='o', linestyle='-', color='royalblue')
+    plt.fill_between(hours, 0, c_local, color='lightblue', alpha=0.4)
+    plt.title('General Hourly Energy Consumption Profile Over 24 Hours')
+    plt.xlabel('Hour of Day')
+    plt.ylabel('Energy Consumption (kWh)')
+    plt.xticks(hours)
+    plt.grid(True)
+    plt.show()
+    print(c_local)
+
+    return 0
+
 class AgentModel:
     def __init__(self, num_user=4, num_timestep=24):
         self.model = Model("model")
@@ -89,11 +106,14 @@ class AgentModel:
         self.p_disc = {}
         self.e = {}
 
-        for _ in range(self.T):
-            self.c_local.append(1.0)
+        for t in range(self.T):
+            if 8 <= t <= 18:
+                self.c_local.append(0.8)
+            else:
+                self.c_local.append(1.2)
             self.c_grid.append(2.0)
             self.c_feedin.append(0.5)
-            self.c_cyc.append(0.1)
+            self.c_cyc.append(0.01)
 
         self.p_char_max = []
         self.p_disc_max = []
@@ -214,7 +234,6 @@ if __name__ == '__main__':
     num_user = 4
     num_timestep = 24
     pv_profile = generate_pv_production(num_timestep)
-    # breakpoint()
     consumption_profile = generate_electricity_consumption_profile()
     agent_model = AgentModel(num_user=num_user, num_timestep=num_timestep)
     agent_model.set_pv_generation_profile(pv_profile)
@@ -222,6 +241,8 @@ if __name__ == '__main__':
     agent_model.add_variables()
     agent_model.add_constraints()
     agent_model.add_objectives()
+    plot_local_price(agent_model.c_local)
+    # breakpoint()
     agent_model.model.optimize()
     agent_model.retrieve_results()
 
