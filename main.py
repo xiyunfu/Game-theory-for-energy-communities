@@ -41,7 +41,6 @@ def generate_electricity_consumption_profile():
     hourly_consumption = np.array([0.3] * 6 + [1.5] * 2 + [0.7] * 7 + [1.8] * 4 + [0.5] * 2 + [0.3] * 3) * 5
 
     hours = np.arange(24)  # 0-23 hours
-
     # Plotting
     plt.figure(figsize=(12, 6))
     plt.plot(hours, hourly_consumption, marker='o', linestyle='-', color='royalblue')
@@ -71,6 +70,7 @@ def plot_local_price(c_local):
     print(c_local)
 
     return 0
+
 
 class AgentModel:
     def __init__(self, num_user=4, num_timestep=24):
@@ -105,6 +105,7 @@ class AgentModel:
         self.p_char = {}
         self.p_disc = {}
         self.e = {}
+        self.s = {}
 
         for t in range(self.T):
             if 8 <= t <= 18:
@@ -119,8 +120,8 @@ class AgentModel:
         self.p_disc_max = []
 
         for n in range(self.N):
-            self.p_char_max.append(2.0)
-            self.p_disc_max.append(2.0)
+            self.p_char_max.append(6.0)
+            self.p_disc_max.append(6.0)
 
     def add_variables(self):
         for n in range(self.N):
@@ -128,11 +129,14 @@ class AgentModel:
                 v_p_grid = self.model.addVar(vtype=GRB.CONTINUOUS, name=f'p_grid_time{t}_user{n}')
                 self.p_grid[f'u{n}-t{t}'] = v_p_grid
 
-                soc = self.model.addVar(vtype=GRB.CONTINUOUS, name=f'SoC_time{t}_user{n}')
-                self.SoC[f'u{n}-t{t}'] = soc
-
                 v_p_sell = self.model.addVar(vtype=GRB.CONTINUOUS, name=f'p_sell_time{t}_user{n}')
                 self.p_sell[f'u{n}-t{t}'] = v_p_sell
+
+                v_p_local = self.model.addVar(vtype=GRB.CONTINUOUS, name=f'p_local_time{t}_user{n}')
+                self.p_local[f'u{n}-t{t}'] = v_p_local
+
+                soc = self.model.addVar(vtype=GRB.CONTINUOUS, name=f'SoC_time{t}_user{n}')
+                self.SoC[f'u{n}-t{t}'] = soc
 
                 v_p_char = self.model.addVar(vtype=GRB.CONTINUOUS, name=f'p_char_time{t}_user{n}')
                 self.p_char[f'u{n}-t{t}'] = v_p_char
@@ -155,7 +159,10 @@ class AgentModel:
     def set_pv_generation_profile(self, power_output):
         for n in range(self.N):
             for t in range(self.T):
-                self.p_local[f'u{n}-t{t}'] = power_output[t]
+                if n >= n/2:
+                    self.s[f'u{n}-t{t}'] = power_output[t] * 0.5
+                else:
+                    self.s[f'u{n}-t{t}'] = power_output[t]
 
         print('Set identical hourly PV generation profile for every users.')
         return 0
@@ -174,7 +181,8 @@ class AgentModel:
 
                 self.model.addConstr(self.p_grid[f'u{n}-t{t}'] + self.p_local[f'u{n}-t{t}'] -
                                      self.p_sell[f'u{n}-t{t}'] - self.e[f'u{n}-t{t}'] -
-                                     self.p_char[f'u{n}-t{t}'] - self.p_disc[f'u{n}-t{t}'] == 0)
+                                     self.p_char[f'u{n}-t{t}'] - self.p_disc[f'u{n}-t{t}'] +
+                                     self.s[f'u{n}-t{t}'] == 0)
 
                 self.model.addConstr(self.p_grid[f'u{n}-t{t}'] >= 0)
                 self.model.addConstr(self.p_sell[f'u{n}-t{t}'] >= 0)
@@ -207,9 +215,11 @@ class AgentModel:
         return 0
 
     def retrieve_results(self):
+        result = 0
         # check the solution status
         if self.model.status == GRB.OPTIMAL:
             print("Optimal solution found.")
+            result = 1
         elif self.model.status == GRB.INF_OR_UNBD:
             print("Model is infeasible or unbounded.")
         elif self.model.status == GRB.INFEASIBLE:
@@ -224,6 +234,31 @@ class AgentModel:
 
         for var in self.model.getVars():
             print(f"{var.VarName}: {var.X}")
+
+        return result
+
+    def plot_user_soc_profile(self):
+        profile = {n: [] for n in range(self.N)}
+
+        for n in range(self.N):
+            for t in range(self.T):
+                profile[n].append(self.SoC[f'u{n}-t{t}'].X)
+
+        hours = np.arange(self.T)  # 0-23 hours
+
+        plt.figure(figsize=(12, 6))
+        colors = plt.cm.viridis(np.linspace(0, 1, self.N))
+
+        for n in range(self.N):
+            plt.plot(hours, profile[n], marker='o', linestyle='-', label=f'User {n}', color=colors[n])
+
+        plt.title('Hourly Battery Profile Over 24 Hours For Each User')
+        plt.xlabel('Hour of Day')
+        plt.ylabel('User SoC Profile (kWh)')
+        plt.xticks(hours)
+        plt.grid(True)
+        plt.legend()
+        plt.show()
 
         return 0
 
@@ -244,5 +279,7 @@ if __name__ == '__main__':
     plot_local_price(agent_model.c_local)
     # breakpoint()
     agent_model.model.optimize()
-    agent_model.retrieve_results()
+    result = agent_model.retrieve_results()
+    if result:
+        agent_model.plot_user_soc_profile()
 
