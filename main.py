@@ -181,7 +181,7 @@ class AgentModel:
 
                 self.model.addConstr(self.p_grid[f'u{n}-t{t}'] + self.p_local[f'u{n}-t{t}'] -
                                      self.p_sell[f'u{n}-t{t}'] - self.e[f'u{n}-t{t}'] -
-                                     self.p_char[f'u{n}-t{t}'] - self.p_disc[f'u{n}-t{t}'] +
+                                     self.p_char[f'u{n}-t{t}'] + self.p_disc[f'u{n}-t{t}'] +
                                      self.s[f'u{n}-t{t}'] == 0)
 
                 self.model.addConstr(self.p_grid[f'u{n}-t{t}'] >= 0)
