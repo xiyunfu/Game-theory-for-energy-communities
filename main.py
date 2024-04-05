@@ -91,7 +91,7 @@ class AgentModel:
         # battery efficiency coef
         self.n_char = 0.95
         self.n_disc = 0.95
-        self.SoC_max = 10  # [kWh]
+        self.SoC_max = 3  # [kWh]
         self.SoC_min = 0  # [kWh]
 
         # initialise variables
@@ -111,20 +111,19 @@ class AgentModel:
             # else:
             #     self.c_local.append(1.2)
 
-            self.c_grid.append(2.0)
-            self.c_local = self.c_grid.copy()
-            self.c_feedin.append(0.5)
-            self.c_cyc.append(0.01)
+            self.c_grid.append(20.0)
+            self.c_feedin.append(6.0)
+            self.c_cyc.append(0.1)
 
-        self.p_char_max = 4.0
-        self.p_disc_max = 4.0
+        self.p_char_max = 1.0
+        self.p_disc_max = 1.0
 
     def add_variables(self):
         for t in range(self.T):
-            v_p = self.model.addVar(vtype=GRB.CONTINUOUS, name=f'p_local_time{t}')
+            v_p = self.model.addVar(lb=-GRB.INFINITY, ub=GRB.INFINITY, vtype=GRB.CONTINUOUS, name=f'p_local_time{t}')
             self.p[f't{t}'] = v_p
 
-            soc = self.model.addVar(vtype=GRB.CONTINUOUS, name=f'SoC_time{t}')
+            soc = self.model.addVar(lb=-GRB.INFINITY, ub=GRB.INFINITY, vtype=GRB.CONTINUOUS, name=f'SoC_time{t}')
             self.SoC[f't{t}'] = soc
 
             v_p_char = self.model.addVar(vtype=GRB.CONTINUOUS, name=f'p_char_time{t}')
@@ -147,9 +146,9 @@ class AgentModel:
     def set_pv_generation_profile(self, power_output, user_index):
         for t in range(self.T):
             if user_index >= num_user/2:
-                self.s[f't{t}'] = power_output[t] * 0.5
+                self.s[f't{t}'] = power_output[t] * 0
             else:
-                self.s[f't{t}'] = power_output[t]
+                self.s[f't{t}'] = power_output[t] * 2
 
         print('Set identical hourly PV generation profile for every users.')
         return 0
@@ -201,6 +200,17 @@ class AgentModel:
             r = 1
         elif self.model.status == GRB.INF_OR_UNBD:
             print("Model is infeasible or unbounded.")
+            self.model.computeIIS()
+            print('\nThe following constraints and variables are in the IIS:')
+            for c in self.model.getConstrs():
+                if c.IISConstr:
+                    print(f'\t{c.constrname}: {self.model.getRow(c)} {c.Sense} {c.RHS}')
+
+            for v in self.model.getVars():
+                if v.IISLB:
+                    print(f'\t{v.varname} ≥ {v.LB}')
+                if v.IISUB:
+                    print(f'\t{v.varname} ≤ {v.UB}')
         elif self.model.status == GRB.INFEASIBLE:
             print("Model is infeasible.")
         elif self.model.status == GRB.UNBOUNDED:
@@ -241,6 +251,7 @@ class AgentModel:
 
         return 0
 
+
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
     # breakpoint()
@@ -250,24 +261,17 @@ if __name__ == '__main__':
     consumption_profile = generate_electricity_consumption_profile(num_timestep)
 
     ## initialize all agent model
-    for n in range(num_user):
-        agent_model = AgentModel(num_timestep=num_timestep)
-        agent_model.set_pv_generation_profile(pv_profile, user_index=n)
-        agent_model.set_energy_consumption_profile(consumption_profile, user_index=n)
-        agent_model.add_variables()
-        agent_model.add_constraints()
-        agent_model.add_objectives()
-        plot_local_price(agent_model.c_local)
 
     # breakpoint()
-    c_grid = 2.0
-    c_feedin = 1.0
+    c_grid = 20.0
+    c_feedin = 10.0
     epsilon = 1e-4
     z = {}
     z['-1'] = [1] * num_timestep
     c_local_last = [c_grid] * num_timestep
     c_local = [0.5 * (c_feedin + c_grid)] * num_timestep
     p = {n: [] for n in range(num_user)}
+    delta = [0.1] * num_timestep   #[(c_grid - c_feedin) * 0.5] * num_timestep
 
     # Initialize the algorithm
     model_list = {f'User{n}': AgentModel(num_timestep=num_timestep, user=n) for n in range(num_user)}
@@ -281,17 +285,21 @@ if __name__ == '__main__':
             agent_model.set_pv_generation_profile(pv_profile, user_index=i)
             agent_model.set_energy_consumption_profile(consumption_profile, user_index=i)
             agent_model.c_local = c_local.copy()
-            agent_model.add_variables()
-            agent_model.add_constraints()
+            if k == 0:
+                agent_model.add_variables()
+                agent_model.add_constraints()
             agent_model.add_objectives()
             agent_model.model.update()
 
             agent_model.model.optimize()
+
             result = agent_model.retrieve_results()
-            
+
             # Retrieve the solution for user i
             for t in range(num_timestep):
                 p[i].append(agent_model.p[f't{t}'].X)
+
+            agent_model.print_result()
 
         # Step 2: Update z based on the solutions p from all users
         z[str(k)] = np.zeros(num_timestep)  # Sum over users
@@ -301,27 +309,29 @@ if __name__ == '__main__':
 
         # Step 3: Update the local price for each time period
         for t in range(num_timestep):
-            if z[str(k)][t] * z[str(k-1)][t] > 0:
-                temp = c_local[t]
-                c_local[t] = c_local[t] + 0.5 * (c_local[t] - c_local_last[t])
-                c_local_last[t] = temp
-            elif z[str(k)][t] * z[str(k-1)][t] < 0:
-                temp = c_local[t]
-                c_local[t] = c_local[t] - 0.5 * (c_local[t] - c_local_last[t])
-                c_local_last[t] = temp
-            else:
-                c_local_last[t] = c_local[t]
+            if z[str(k)][t] > 0:
+                c_local[t] = max(c_feedin, c_local[t] - delta[t])
+            elif z[str(k)][t] < 0:
+                c_local[t] = min(c_grid, c_local[t] + delta[t])
+            if z[str(k)][t] * z[str(k-1)][t] < 0:
+                delta[t] = 0.5 * delta[t]
+
             # If z_new[t] == z[t], c_local remains unchanged
-        print(f"For iteration {k}, the local trading price is \n{c_local} ")
-        print(c_local_last)
+        print(f"For iteration {k}, the local trading price is \n{[(t, c_local[t]) for t in range(len(c_local))]}")
+        print(delta)
+        print(z[str(k)])
+
 
         # Check for convergence
-        if np.linalg.norm(np.array(c_local) - np.array(c_local_last), np.inf) < epsilon:
+        if np.linalg.norm(np.array(delta), np.inf) < epsilon:
+            break
+        if k > 100:
+            # plot_price_iteration(z)
             break
 
         # Update iteration counter and z
         k += 1
-        z[str(k)] = []
+        print()
 
 
 
