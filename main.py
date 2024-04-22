@@ -1,89 +1,26 @@
 from gurobipy import Model, GRB
 import numpy as np
 import matplotlib.pyplot as plt
-
+from helper_functions import (
+    generate_pv_production,
+    generate_electricity_consumption_profile,
+    plot_local_price,
+    plot_battery_soc,
+    plot_iterations,
+)
 """
-All users have batteries installed, but only part of them have PV panels.
+1. All users have batteries installed, but only part of them have PV panels.
+2. For PV generation and electricity consumption, a day start from 6 am and end in 6 am the next day
 """
-
-
-def generate_pv_production(timestep=24):
-    # Constants
-    peak_irradiance = 1000  # W/m² at solar noon
-    panel_efficiency = 0.15  # 15%
-    system_size = 50  # kW
-
-    # Generate a simulated solar irradiance curve over 24 hours (simplified)
-    hours = np.arange(timestep)
-    irradiance = peak_irradiance * np.cos((hours - 12) * np.pi / 12) ** 2
-    irradiance[irradiance < 0] = 0  # No negative irradiance
-    irradiance[:6] = 0  # No generation before 6 am
-    irradiance[17:] = 0  # No generation after 8 pm
-
-    # Calculate power output
-    power_output = irradiance * panel_efficiency * system_size / 1000  # kW
-
-    # Plot
-    plt.plot(hours, power_output, label='Solar Power Output')
-    plt.fill_between(hours, 0, power_output, alpha=0.3)
-    plt.xlabel('Hour of Day')
-    plt.ylabel('Power Output (kW)')
-    plt.title('Simulated Solar Panel Power Output Over 24 Hours')
-    plt.legend()
-    plt.grid(True)
-    plt.show()
-
-    print(power_output)
-    return power_output
-
-
-def generate_electricity_consumption_profile(num_timestep:int):
-    hourly_consumption = np.array([0.3] * 6 + [1.5] * 2 + [0.7] * 7 + [1.8] * 4 + [0.5] * 2 + [0.3] * 3) * 5
-
-    hours = np.arange(num_timestep)  # 0-23 hours
-    # Plotting
-    plt.figure(figsize=(12, 6))
-    plt.plot(hours, hourly_consumption, marker='o', linestyle='-', color='royalblue')
-    plt.fill_between(hours, 0, hourly_consumption, color='lightblue', alpha=0.4)
-    plt.title('General Hourly Energy Consumption Profile Over 24 Hours')
-    plt.xlabel('Hour of Day')
-    plt.ylabel('Energy Consumption (kWh)')
-    plt.xticks(hours)
-    plt.grid(True)
-    plt.show()
-    print(hourly_consumption)
-
-    return hourly_consumption
-
-
-def plot_local_price(c_local):
-    hours = np.arange(24)
-    plt.figure(figsize=(12, 6))
-    plt.plot(hours, c_local, marker='o', linestyle='-', color='royalblue')
-    plt.fill_between(hours, 0, c_local, color='lightblue', alpha=0.4)
-    plt.title('General Hourly Energy Consumption Profile Over 24 Hours')
-    plt.xlabel('Hour of Day')
-    plt.ylabel('Energy Consumption (kWh)')
-    plt.xticks(hours)
-    plt.grid(True)
-    plt.show()
-    print(c_local)
-
-    return 0
-
 
 class AgentModel:
-    def __init__(self, num_timestep=24, user=0):
+    def __init__(self, num_timestep=24, user=0, SoC_max=20, SoC_diff=False):
         self.model = Model(f'Optimization-User{user}')
-        ## set constants
-        # time period
+
         self.T = num_timestep
-        # total number of user
-        # self.N = num_user
 
         # cost/feed-in price
         # c_feedin < c_local < c_grid
-        self.c_local = []
         self.c_grid = []
         self.c_feedin = []
         self.c_cyc = []
@@ -91,7 +28,10 @@ class AgentModel:
         # battery efficiency coef
         self.n_char = 0.95
         self.n_disc = 0.95
-        self.SoC_max = 3  # [kWh]
+        if SoC_diff:
+            self.SoC_max = SoC_max + 2 * int(user)  # [kWh]
+        else:
+            self.SoC_max = SoC_max
         self.SoC_min = 0  # [kWh]
 
         # initialise variables
@@ -106,17 +46,12 @@ class AgentModel:
         self.z = {}
 
         for t in range(self.T):
-            # if 8 <= t <= 18:
-            #     self.c_local.append(0.8)
-            # else:
-            #     self.c_local.append(1.2)
-
             self.c_grid.append(20.0)
-            self.c_feedin.append(6.0)
+            self.c_feedin.append(10.0)
             self.c_cyc.append(0.1)
 
-        self.p_char_max = 1.0
-        self.p_disc_max = 1.0
+        self.p_char_max = 10.0
+        self.p_disc_max = 10.0
 
     def add_variables(self):
         for t in range(self.T):
@@ -131,6 +66,9 @@ class AgentModel:
 
             v_p_disc = self.model.addVar(vtype=GRB.CONTINUOUS, name=f'p_disc_time{t}')
             self.p_disc[f't{t}'] = v_p_disc
+
+        soc = self.model.addVar(lb=-GRB.INFINITY, ub=GRB.INFINITY, vtype=GRB.CONTINUOUS, name=f'SoC_time{self.T}')
+        self.SoC[f't{self.T}'] = soc
 
         self.model.update()
 
@@ -153,16 +91,15 @@ class AgentModel:
         print('Set identical hourly PV generation profile for every users.')
         return 0
 
-    def add_constraints(self):
+    def add_agent_constraint(self):
         self.model.addConstr(self.SoC[f't{0}'] == 0)
 
         for t in range(self.T):
             self.model.addConstr(self.SoC[f't{t}'] <= self.SoC_max)
             self.model.addConstr(self.SoC[f't{t}'] >= self.SoC_min)
 
-            if t != self.T-1:
-                self.model.addConstr(self.SoC[f't{t+1}'] - self.SoC[f't{t}'] -
-                                     self.n_char*self.p_char[f't{t}'] + (1/self.n_disc)*self.p_disc[f't{t}'] == 0)
+            self.model.addConstr(self.SoC[f't{t+1}'] - self.SoC[f't{t}'] -
+                                 self.n_char*self.p_char[f't{t}'] + (1/self.n_disc)*self.p_disc[f't{t}'] == 0)
 
             self.model.addConstr(self.p[f't{t}'] + self.e[f't{t}'] +
                                  self.p_char[f't{t}'] - self.p_disc[f't{t}'] -
@@ -173,15 +110,18 @@ class AgentModel:
             self.model.addConstr(self.p_disc[f't{t}'] >= 0)
             self.model.addConstr(self.p_disc[f't{t}'] <= self.p_disc_max)
 
+        self.model.addConstr(self.SoC[f't{self.T}'] <= self.SoC_max)
+        self.model.addConstr(self.SoC[f't{self.T}'] >= self.SoC_min)
+
         self.model.update()
 
         return 0
 
-    def add_objectives(self):
+    def add_objectives(self, c_local):
         # expense
         j_expense = 0
         for t in range(self.T):
-            j_expense -= self.c_local[t]*self.p[f't{t}']
+            j_expense -= c_local[t]*self.p[f't{t}']
         # battery
         j_battery = 0
         for t in range(self.T):
@@ -234,23 +174,27 @@ class AgentModel:
         for t in range(self.T):
             profile.append(self.SoC[f't{t}'].X)
 
-        hours = np.arange(self.T)  # 0-23 hours
+        hour_labels = [(6 + t) % 24 for t in range(self.T)]
+        hour_label_positions = range(self.T)
 
         plt.figure(figsize=(12, 6))
         colors = plt.cm.viridis(np.linspace(0, 1, self.N))
 
-        plt.plot(hours, profile, marker='o', linestyle='-', label=f'User {n}', color=colors[n])
+        plt.plot(profile, marker='o', linestyle='-', label=f'User {n}', color=colors[n])
 
         plt.title('Hourly Battery Profile Over 24 Hours For Each User')
         plt.xlabel('Hour of Day')
         plt.ylabel('User SoC Profile (kWh)')
-        plt.xticks(hours)
+        plt.xticks(hour_label_positions, hour_labels)
+
         plt.grid(True)
         plt.legend()
         plt.show()
 
         return 0
 
+
+# def plot_battery_profile(battery_profile):
 
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
@@ -260,35 +204,34 @@ if __name__ == '__main__':
     pv_profile = generate_pv_production(num_timestep)
     consumption_profile = generate_electricity_consumption_profile(num_timestep)
 
-    ## initialize all agent model
-
-    # breakpoint()
     c_grid = 20.0
     c_feedin = 10.0
-    epsilon = 1e-4
+    epsilon = 1e-3
     z = {}
     z['-1'] = [1] * num_timestep
-    c_local_last = [c_grid] * num_timestep
     c_local = [0.5 * (c_feedin + c_grid)] * num_timestep
-    p = {n: [] for n in range(num_user)}
-    delta = [0.1] * num_timestep   #[(c_grid - c_feedin) * 0.5] * num_timestep
+    delta = [5] * num_timestep   #[(c_grid - c_feedin) * 0.5] * num_timestep
+    c_local_list = [c_local.copy()]
+    delta_list = [delta.copy()]
+    z_list = []
 
-    # Initialize the algorithm
-    model_list = {f'User{n}': AgentModel(num_timestep=num_timestep, user=n) for n in range(num_user)}
+    # Initialize all agent models
+    model_list = {f'User{n}': AgentModel(num_timestep=num_timestep, user=n, SoC_max=40) for n in range(num_user)}
     k = 0  # Iteration counter
 
     # Begin the iterative process
     while True:
+        p = {n: [] for n in range(num_user)}
         # Step 1: Solve independent optimization problem for each user
         for i in range(num_user):
             agent_model = model_list[f'User{i}']
             agent_model.set_pv_generation_profile(pv_profile, user_index=i)
             agent_model.set_energy_consumption_profile(consumption_profile, user_index=i)
-            agent_model.c_local = c_local.copy()
             if k == 0:
                 agent_model.add_variables()
-                agent_model.add_constraints()
-            agent_model.add_objectives()
+                agent_model.add_agent_constraint()
+
+            agent_model.add_objectives(c_local)
             agent_model.model.update()
 
             agent_model.model.optimize()
@@ -316,22 +259,41 @@ if __name__ == '__main__':
             if z[str(k)][t] * z[str(k-1)][t] < 0:
                 delta[t] = 0.5 * delta[t]
 
+        delta_list.append(delta.copy())
+        c_local_list.append(c_local.copy())
+        z_list.append(z[str(k)].copy())
+
             # If z_new[t] == z[t], c_local remains unchanged
         print(f"For iteration {k}, the local trading price is \n{[(t, c_local[t]) for t in range(len(c_local))]}")
         print(delta)
         print(z[str(k)])
 
-
         # Check for convergence
         if np.linalg.norm(np.array(delta), np.inf) < epsilon:
             break
-        if k > 100:
+        if k >= 1000:
             # plot_price_iteration(z)
             break
 
         # Update iteration counter and z
         k += 1
-        print()
+
+
+    # Plotting
+    plot_local_price(c_local, z[str(k)])
+    plot_iterations(delta_list, label="Delta")
+    plot_iterations(c_local_list, label="Local Price")
+    plot_iterations(z_list, label="Aggregator z")
+
+    battery_profile = {i: [] for i in range(num_user)}
+    for i in range(num_user):
+        agent_model = model_list[f'User{i}']
+        for t in range(num_timestep+1):
+            battery_profile[i].append(agent_model.SoC[f't{t}'].X)
+
+    plot_battery_soc(battery_profile, num_user, num_timestep)
+
+
 
 
 
