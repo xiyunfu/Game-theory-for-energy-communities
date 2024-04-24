@@ -1,5 +1,8 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import os
+
+run_directory = os.environ['RUN_DIRECTORY']
 
 
 def generate_pv_production(timestep=24):
@@ -34,6 +37,11 @@ def generate_pv_production(timestep=24):
 
     print(power_output)
 
+    filename = "Simulated_PV_Output.png"
+    full_path = os.path.join(run_directory, filename)
+    plt.savefig(full_path)
+    plt.close()
+
     return power_output
 
 
@@ -55,6 +63,11 @@ def generate_electricity_consumption_profile(num_timestep:int):
     plt.show()
     print(hourly_consumption)
 
+    filename = "Energy_Consumption_Profile.png"
+    full_path = os.path.join(run_directory, filename)
+    plt.savefig(full_path)
+    plt.close()
+
     return hourly_consumption
 
 
@@ -63,13 +76,18 @@ def plot_single_local_price(c_local):
     plt.figure(figsize=(12, 6))
     plt.plot(hours, c_local, marker='o', linestyle='-', color='royalblue')
     plt.fill_between(hours, 0, c_local, color='lightblue', alpha=0.4)
-    plt.title('General Hourly Energy Consumption Profile Over 24 Hours')
+    plt.title('Local Price')
     plt.xlabel('Hour of Day')
     plt.ylabel('Energy Consumption (kWh)')
     plt.xticks(hours)
     plt.grid(True)
     plt.show()
     print(c_local)
+
+    filename = "Local_Price.png"
+    full_path = os.path.join(run_directory, filename)
+    plt.savefig(full_path)
+    plt.close()
 
     return 0
 
@@ -89,6 +107,11 @@ def plot_battery_soc(battery_profile, num_user=4, num_timestep=24):
     plt.legend()
     plt.grid(True)
     plt.show()
+
+    filename = "Battery_Profile_for_Each_User.png"
+    full_path = os.path.join(run_directory, filename)
+    plt.savefig(full_path)
+    plt.close()
 
 
 def plot_local_price(c, z):
@@ -117,6 +140,11 @@ def plot_local_price(c, z):
     plt.xticks(hour_label_positions, hour_labels)
 
     plt.show()
+
+    filename = "Local_price_and_Electricity_trading_amounts.png"
+    full_path = os.path.join(run_directory, filename)
+    plt.savefig(full_path)
+    plt.close()
 
     return 0
 
@@ -155,4 +183,9 @@ def plot_iterations(iteration_list: list, label: str = "Delta"):
     plt.legend(loc='upper left', bbox_to_anchor=(1, 1))
     plt.tight_layout()
     plt.show()
+
+    filename = f"Iteration {label}.png"
+    full_path = os.path.join(run_directory, filename)
+    plt.savefig(full_path)
+    plt.close()
 
