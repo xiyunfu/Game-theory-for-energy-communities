@@ -1,30 +1,44 @@
 from gurobipy import Model, GRB
 import numpy as np
-import matplotlib.pyplot as plt
-import os
-
-run_directory = os.environ['RUN_DIRECTORY']
 
 
 class AgentModel:
-    def __init__(self, num_timestep=24, user=0, SoC_max=20, SoC_diff=False):
+    def __init__(self,
+                 params,
+                 user: int = 0,
+                 ):
         self.model = Model(f'Optimization-User{user}')
-
-        self.T = num_timestep
+        self.T = params['num_timestep']
+        SoC_max = params['SoC_max']
+        SoC_diff = params['SoC_diff']
+        c_grid = params['c_grid']
+        c_feedin = params['c_feedin']
+        c_cyc = params['c_cyc']
 
         # cost/feed-in price
         # c_feedin < c_local < c_grid
         self.c_grid = []
         self.c_feedin = []
         self.c_cyc = []
+        for t in range(self.T):
+            self.c_grid.append(c_grid)
+            self.c_feedin.append(c_feedin)
+            self.c_cyc.append(c_cyc)
 
         # battery efficiency coef
         self.n_char = 0.95
         self.n_disc = 0.95
+
         if SoC_diff:
             self.SoC_max = SoC_max + 2 * int(user)  # [kWh]
         else:
             self.SoC_max = SoC_max
+
+        if user == 0:
+            self.SoC_max = SoC_max + params['first_user_battery_size_augment']
+        elif user == params['num_user'] - 1:
+            self.SoC_max = SoC_max + params['last_user_battery_size_augment']
+
         self.SoC_min = 0  # [kWh]
 
         # initialise variables
@@ -38,11 +52,6 @@ class AgentModel:
         self.s = {}
         self.z = {}
 
-        for t in range(self.T):
-            self.c_grid.append(20.0)
-            self.c_feedin.append(10.0)
-            self.c_cyc.append(0.1)
-
         self.p_char_max = 10.0
         self.p_disc_max = 10.0
 
@@ -51,7 +60,7 @@ class AgentModel:
             v_p = self.model.addVar(lb=-GRB.INFINITY, ub=GRB.INFINITY, vtype=GRB.CONTINUOUS, name=f'p_local_time{t}')
             self.p[f't{t}'] = v_p
 
-            soc = self.model.addVar(lb=-GRB.INFINITY, ub=GRB.INFINITY, vtype=GRB.CONTINUOUS, name=f'SoC_time{t}')
+            soc = self.model.addVar(ub=GRB.INFINITY, vtype=GRB.CONTINUOUS, name=f'SoC_time{t}')
             self.SoC[f't{t}'] = soc
 
             v_p_char = self.model.addVar(vtype=GRB.CONTINUOUS, name=f'p_char_time{t}')
@@ -60,28 +69,37 @@ class AgentModel:
             v_p_disc = self.model.addVar(vtype=GRB.CONTINUOUS, name=f'p_disc_time{t}')
             self.p_disc[f't{t}'] = v_p_disc
 
-        soc = self.model.addVar(lb=-GRB.INFINITY, ub=GRB.INFINITY, vtype=GRB.CONTINUOUS, name=f'SoC_time{self.T}')
-        self.SoC[f't{self.T}'] = soc
+        self.SoC[f't{self.T}'] = self.model.addVar(ub=GRB.INFINITY, vtype=GRB.CONTINUOUS, name=f'SoC_time{self.T}')
 
         self.model.update()
 
         return 0
 
-    def set_energy_consumption_profile(self, hourly_consumption, user_index):
+    def set_energy_consumption_profile(self, hourly_consumption, user_index, random_mag: float = 1):
+        rng = np.random.default_rng(seed=user_index)
+        hourly_consumption_with_noise = rng.random(*np.shape(hourly_consumption)) * random_mag + hourly_consumption
+        # basic consumption:  hourly_consumption
         for t in range(self.T):
-            self.e[f't{t}'] = hourly_consumption[t]
+            self.e[f't{t}'] = hourly_consumption_with_noise[t]
 
-        print('Set identical hourly energy consumption profile for every users.')
+        # print('Set identical hourly energy consumption profile for every users.')
         return 0
 
-    def set_pv_generation_profile(self, power_output, user_index):
+    def set_pv_generation_profile(self, params, power_output, user_index, num_user, random_mag: float = 1):
+        rng = np.random.default_rng(seed=user_index)
+        if user_index == 0:
+            first_user = 1
+        else:
+            first_user = 0
+
+        power_output = power_output * (1 + first_user * (params['first_user_pv_size_augment']/params['pv_size'])) + rng.random(*np.shape(power_output)) * random_mag
         for t in range(self.T):
             if user_index >= num_user/2:
                 self.s[f't{t}'] = power_output[t] * 0
             else:
-                self.s[f't{t}'] = power_output[t] * 2
+                self.s[f't{t}'] = power_output[t] * 1
 
-        print('Set identical hourly PV generation profile for every users.')
+        # print('Set identical hourly PV generation profile for every user.')
         return 0
 
     def add_agent_constraint(self):
@@ -119,6 +137,29 @@ class AgentModel:
         j_battery = 0
         for t in range(self.T):
             j_battery += ((self.n_char*self.p_char[f't{t}'] + (1/self.n_disc)*self.p_disc[f't{t}']) * self.c_cyc[t])**2
+
+        self.model.setObjective(j_expense + j_battery, sense=GRB.MINIMIZE)
+        self.model.update()
+
+        return 0
+
+    def add_no_trading_objectives(self, c_grid, c_feedin):
+        earning_t = []
+        for t in range(self.T):
+            earning_t.append(
+                self.model.addVar(lb=-GRB.INFINITY, ub=GRB.INFINITY, vtype=GRB.CONTINUOUS, name=f"expense{t}")
+            )
+            self.model.addConstr(earning_t[-1] <= self.p[f't{t}'] * c_grid)  # p > 0 selling
+            self.model.addConstr(earning_t[-1] <= self.p[f't{t}'] * c_feedin)
+        # expense
+        j_expense = 0
+        for t in range(self.T):
+            j_expense -= earning_t[t]
+        # battery
+        j_battery = 0
+        for t in range(self.T):
+            j_battery += ((self.n_char * self.p_char[f't{t}'] +
+                           (1 / self.n_disc) * self.p_disc[f't{t}']) * self.c_cyc[t]) ** 2
 
         self.model.setObjective(j_expense + j_battery, sense=GRB.MINIMIZE)
         self.model.update()
