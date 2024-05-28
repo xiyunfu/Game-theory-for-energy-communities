@@ -239,8 +239,8 @@ class Handler:
         in_utility = []
         users = list(expense.keys())
         for i in users:
-            out_utility.append(round(-expense[i][0], 1))
-            in_utility.append(round(-expense[i][-1], 1))
+            out_utility.append(round(expense[i][0], 1))
+            in_utility.append(round(expense[i][-1], 1))
 
         x = np.arange(len(users))  # the label locations
         width = 0.35  # the width of the bars

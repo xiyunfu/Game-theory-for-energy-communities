@@ -14,14 +14,14 @@ from config import initialize_run_directory
 def main():
     start_time = time.time()
     params = {
-        'num_user': 10,
+        'num_user': 4,
         'num_timestep': 24,
         'c_grid': 30.0,  # 30 Swiss cents (CHF) per kWh
         'c_feedin': 10.0,  # ~9 Swiss cents (CHF) per kWh
         'c_cyc': 0.1,
         'init_delta': 0.001 * 2 ** 10,
         'epsilon': 1e-3,
-        'SoC_max': 50,  # kWh
+        'SoC_max': 500,  # kWh
         'SoC_diff': False,
         'consumption_rd_mag': 2,
         'generation_rd_mag': 0,
@@ -32,6 +32,7 @@ def main():
         'first_user_pv_size_augment': 0,  # kWh
         'first_user_battery_size_augment': 0,  # kWh
         'last_user_battery_size_augment': 0,  # kWh
+        'tau': 0.001,
     }
 
     run_directory = initialize_run_directory(params)
@@ -44,6 +45,7 @@ def main():
     epsilon = params['epsilon']
     soc_max = params['SoC_max']
     soc_diff = params['SoC_diff']
+    tau = params['tau']
 
     handler = Handler()
     pv_profile = handler.generate_pv_production(num_timestep, size=params['pv_size'])
@@ -51,9 +53,9 @@ def main():
 
     z = {}
     z['-1'] = [1] * num_timestep
-    c_local = [0.5 * (c_feedin + c_grid)] * num_timestep
+    # c_local = [[0.5 * (c_feedin + c_grid)] * num_timestep] * num_user
     delta = [params['init_delta']] * num_timestep
-    c_local_list = [c_local.copy()]
+    c_local_list = []
     delta_list = [delta.copy()]
     z_list = []
     user_consumption_profile = {i: [] for i in range(num_user)}
@@ -61,12 +63,13 @@ def main():
     expense = {n: [] for n in range(num_user)}
 
     # Initialize all agent models
+    c_local_old = [[c_grid/num_user for _ in range(num_timestep)] for _ in range(num_user)]
     model_list = {f'User{n}': AgentModel(params, user=n)
                   for n in range(num_user)}
     k = 0
     # Begin the iterative process
     while True:
-        p = {n: [] for n in range(num_user)}
+        p_d = {n: [] for n in range(num_user)}
         soc = {n: [] for n in range(num_user)}
 
         # Step 1: Solve independent optimization problem for each user
@@ -87,12 +90,12 @@ def main():
             if k == 0:
                 agent_model.add_variables()
                 agent_model.add_agent_constraint()
-                agent_model.add_no_trading_objectives(c_grid, c_feedin)
+                agent_model.add_objectives([c_grid / num_user] * num_timestep)  # set the uniform price
                 for t in range(num_timestep):
                     user_consumption_profile[i].append(agent_model.e[f't{t}'])
                     user_generation_profile[i].append(agent_model.s[f't{t}'])
             else:
-                agent_model.add_objectives(c_local)
+                agent_model.add_objectives(c_local[i])
             agent_model.model.update()
             agent_model.model.optimize()
             assert agent_model.model.status == GRB.OPTIMAL
@@ -100,7 +103,7 @@ def main():
 
             # Retrieve the solution for user i
             for t in range(num_timestep):
-                p[i].append(agent_model.p[f't{t}'].X)
+                p_d[i].append(agent_model.p_d[f't{t}'].X)
                 soc[i].append(agent_model.SoC[f't{t}'].X)
 
         if k == 0:
@@ -113,29 +116,34 @@ def main():
         z[str(k)] = np.zeros(num_timestep)
         for t in range(num_timestep):
             for i in range(num_user):
-                z[str(k)][t] += p[i][t]
+                z[str(k)][t] += p_d[i][t]
 
         # Step 3: Update the local price for each time period
+        c_local = [[0.0 for _ in range(num_timestep)] for _ in range(num_user)]
         for t in range(num_timestep):
-            if z[str(k)][t] > params['z_threshold']:
-                c_local[t] = max(c_feedin, c_local[t] - delta[t])
-            elif z[str(k)][t] < - params['z_threshold']:
-                c_local[t] = min(c_grid, c_local[t] + delta[t])
-            if z[str(k)][t] * z[str(k - 1)][t] < 0:
-                delta[t] = max(0.5 * delta[t], params['min_delta'])
+            for i in range(num_user):
+                c_local[i][t] = (1 - tau) * c_local_old[i][t] + tau * c_grid * (p_d[i][t] / z[str(k)][t])
+            # if z[str(k)][t] > params['z_threshold']:
+            #     c_local[t] = max(c_feedin, c_local[t] - delta[t])
+            # elif z[str(k)][t] < - params['z_threshold']:
+            #     c_local[t] = min(c_grid, c_local[t] + delta[t])
+            # if z[str(k)][t] * z[str(k - 1)][t] < 0:
+            #     delta[t] = max(0.5 * delta[t], params['min_delta'])
 
-        delta_list.append(delta.copy())
+        # delta_list.append(delta.copy())
         c_local_list.append(c_local.copy())
         z_list.append(z[str(k)].copy())
+        c_local_old = c_local.copy()
 
         print(f"For iteration {k}, the local trading price is \n{[(t, c_local[t]) for t in range(len(c_local))]}")
         print(delta)
         print(z[str(k)])
 
         # Check for convergence
-        if np.linalg.norm(np.array(c_local_list[-1]) - np.array(c_local_list[-2]), np.inf) < epsilon:
-            convergency = True
-            break
+        if k > 1:
+            if np.linalg.norm(np.array(c_local_list[-1]) - np.array(c_local_list[-2]), np.inf) < epsilon:
+                convergency = True
+                break
         if k >= params['max_iteration']:
             convergency = False
             break
@@ -172,10 +180,12 @@ def main():
                wandb=wandb)
 
     # Plotting
-    handler.plot_local_price(c_local, z[str(k)])
-    handler.plot_iterations(delta_list, label="Delta")
-    handler.plot_iterations(c_local_list, label="Local Price")
-    handler.plot_iterations(z_list, label="Aggregator z")
+    # handler.plot_iterations(delta_list, label="Delta")
+    c_local_array = np.array(c_local_list)
+    for i in range(num_user):
+        handler.plot_iterations(c_local_array[:, i, :], label=f"Electricity Price of user {i}")
+        # handler.plot_local_price(c_local_array[:, i, :], z[str(k)])
+    handler.plot_iterations(z_list, label="Aggregator z of electricity demand")
 
     battery_profile = {i: [] for i in range(num_user)}
     trading_profile = {i: [] for i in range(num_user)}
@@ -185,15 +195,15 @@ def main():
         for t in range(num_timestep + 1):
             battery_profile[i].append(agent_model.SoC[f't{t}'].X)
             if not t == num_timestep:
-                trading_profile[i].append(agent_model.p[f't{t}'].X)
+                trading_profile[i].append(agent_model.p_d[f't{t}'].X)
 
     handler.plot_user_profile(battery_profile, type="Battery", num_user=num_user, num_timestep=num_timestep)
-    handler.plot_user_profile(trading_profile, type='Trading', num_user=num_user, num_timestep=num_timestep)
+    handler.plot_user_profile(trading_profile, type='Demand', num_user=num_user, num_timestep=num_timestep)
     handler.plot_expense_diff(expense)
 
     save_dict(battery_profile, run_directory, name='final_battery_profile.txt', wandb=wandb)
     save_dict(soc, run_directory, name='last_iteration_SoC.txt', wandb=wandb)
-    save_dict(p, run_directory, name='last_iteration_p.txt', wandb=wandb)
+    save_dict(p_d, run_directory, name='last_iteration_p.txt', wandb=wandb)
 
     wandb.finish()
 

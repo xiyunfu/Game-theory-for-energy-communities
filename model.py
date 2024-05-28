@@ -45,20 +45,20 @@ class AgentModel:
         # p - the amounts of electricity, SoC - electricity storage in battery, e - energy consumption
         # all in [kW]
         self.SoC = {}
-        self.p = {}
+        self.p_d = {}
         self.p_char = {}
         self.p_disc = {}
         self.e = {}
         self.s = {}
         self.z = {}
 
-        self.p_char_max = 10.0
-        self.p_disc_max = 10.0
+        self.p_char_max = 1000.0
+        self.p_disc_max = 1000.0
 
     def add_variables(self):
         for t in range(self.T):
-            v_p = self.model.addVar(lb=-GRB.INFINITY, ub=GRB.INFINITY, vtype=GRB.CONTINUOUS, name=f'p_local_time{t}')
-            self.p[f't{t}'] = v_p
+            v_p = self.model.addVar(lb=-GRB.INFINITY, ub=GRB.INFINITY, vtype=GRB.CONTINUOUS, name=f'p_demand{t}')
+            self.p_d[f't{t}'] = v_p
 
             soc = self.model.addVar(ub=GRB.INFINITY, vtype=GRB.CONTINUOUS, name=f'SoC_time{t}')
             self.SoC[f't{t}'] = soc
@@ -112,15 +112,18 @@ class AgentModel:
             self.model.addConstr(self.SoC[f't{t+1}'] - self.SoC[f't{t}'] -
                                  self.n_char*self.p_char[f't{t}'] + (1/self.n_disc)*self.p_disc[f't{t}'] == 0)
 
-            self.model.addConstr(self.p[f't{t}'] + self.e[f't{t}'] +
-                                 self.p_char[f't{t}'] - self.p_disc[f't{t}'] -
+            self.model.addConstr(self.p_d[f't{t}'] - self.e[f't{t}'] -
+                                 self.p_char[f't{t}'] + self.p_disc[f't{t}'] +
                                  self.s[f't{t}'] == 0)
+
+            self.model.addConstr(self.p_d[f't{t}'] >= 0)
 
             self.model.addConstr(self.p_char[f't{t}'] >= 0)
             self.model.addConstr(self.p_char[f't{t}'] <= self.p_char_max)
             self.model.addConstr(self.p_disc[f't{t}'] >= 0)
             self.model.addConstr(self.p_disc[f't{t}'] <= self.p_disc_max)
 
+        # Add constraint when t = T:
         self.model.addConstr(self.SoC[f't{self.T}'] <= self.SoC_max)
         self.model.addConstr(self.SoC[f't{self.T}'] >= self.SoC_min)
 
@@ -132,7 +135,7 @@ class AgentModel:
         # expense
         j_expense = 0
         for t in range(self.T):
-            j_expense -= c_local[t]*self.p[f't{t}']
+            j_expense += c_local[t]*self.p_d[f't{t}']
         # battery
         j_battery = 0
         for t in range(self.T):
@@ -149,8 +152,8 @@ class AgentModel:
             earning_t.append(
                 self.model.addVar(lb=-GRB.INFINITY, ub=GRB.INFINITY, vtype=GRB.CONTINUOUS, name=f"expense{t}")
             )
-            self.model.addConstr(earning_t[-1] <= self.p[f't{t}'] * c_grid)  # p > 0 selling
-            self.model.addConstr(earning_t[-1] <= self.p[f't{t}'] * c_feedin)
+            self.model.addConstr(earning_t[-1] <= self.p_d[f't{t}'] * c_grid)  # p > 0 selling
+            self.model.addConstr(earning_t[-1] <= self.p_d[f't{t}'] * c_feedin)
         # expense
         j_expense = 0
         for t in range(self.T):
