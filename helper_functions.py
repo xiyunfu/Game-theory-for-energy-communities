@@ -211,11 +211,14 @@ class Handler:
         return 0
 
     def plot_iterations(self, iteration_list: list, label: str = "Delta"):
-        num_timestep = len(iteration_list[0])
         iter_array = np.array(iteration_list)
         plt.figure(figsize=(12, 6))
-        for i in range(num_timestep):
-            plt.plot(iter_array[:, i], label=f'Hour {(i + 6) % 24}')
+        if iter_array.ndim == 2:
+            num_timestep = len(iteration_list[0])
+            for i in range(num_timestep):
+                plt.plot(iter_array[:, i], label=f'Hour {(i + 6) % 24}')
+        elif iter_array.ndim == 1:
+            plt.plot(iter_array, label="Sum over all demand")  # The only 1d array is when it's sum over z
 
         plt.title(f'{label} Change Over Iterations for Each Timestep')
         plt.xlabel('Iteration Number')

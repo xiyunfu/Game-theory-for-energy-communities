@@ -14,6 +14,7 @@ class AgentModel:
         c_grid = params['c_grid']
         c_feedin = params['c_feedin']
         c_cyc = params['c_cyc']
+        self.init_char = params['init_battery_charge']
 
         # cost/feed-in price
         # c_feedin < c_local < c_grid
@@ -57,8 +58,8 @@ class AgentModel:
 
     def add_variables(self):
         for t in range(self.T):
-            v_p = self.model.addVar(lb=-GRB.INFINITY, ub=GRB.INFINITY, vtype=GRB.CONTINUOUS, name=f'p_demand{t}')
-            self.p_d[f't{t}'] = v_p
+            v_p_d = self.model.addVar(lb=-GRB.INFINITY, ub=GRB.INFINITY, vtype=GRB.CONTINUOUS, name=f'p_demand{t}')
+            self.p_d[f't{t}'] = v_p_d
 
             soc = self.model.addVar(ub=GRB.INFINITY, vtype=GRB.CONTINUOUS, name=f'SoC_time{t}')
             self.SoC[f't{t}'] = soc
@@ -103,7 +104,8 @@ class AgentModel:
         return 0
 
     def add_agent_constraint(self):
-        self.model.addConstr(self.SoC[f't{0}'] == 0)
+        self.model.addConstr(self.SoC[f't{0}'] == self.SoC_max * self.init_char)
+        self.model.addConstr(self.SoC[f't{self.T}'] == self.SoC_max * self.init_char)
 
         for t in range(self.T):
             self.model.addConstr(self.SoC[f't{t}'] <= self.SoC_max)
